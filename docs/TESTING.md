@@ -1,6 +1,17 @@
 # 测试和真机验收
 
-## 云端已执行（2026-10-02）
+## v0.2 云端验证（2026-10-02）
+
+- 最终完整 Gradle 聚合检查通过：shared:test、phone/testDebugUnitTest、tv/testDebugUnitTest、updater/testDebugUnitTest、三个 Android module 的 lintDebug、phone/tv assembleDebug。
+- 116 个 JUnit 测试通过：shared 84、phone 14、TV 2、updater 16，零 failures/errors。包含请求批准/取消/过期/断开、来源 IP 与 secret、名称控制字符、发现协议限制、更新 URL/摘要/签名/版本以及 manifest 解析边界。
+- 两个 APK 都是 versionName 0.2.0 / versionCode 2，包名保持 dev.lancast.phone 和 dev.lancast.tv。
+- 使用 apksigner 验证两个 APK 签名；证书 SHA-256 与已有 v0.1 一致：ecfff34ef90498c034582f4b5fc1f230bdc462a222a43ff9b9776c3f829d6ee3。证书一致不等于实际系统升级测试已完成。
+- lint 无错误，phone 2、TV 9、updater 1 项非阻断警告（旧备份声明、文字国际化、TV资源/API建议和持久更新状态同步写入）。
+- 独立静态安全检查修复了发现队列无界、设备名控制字符、取消过程中遗失请求secret和旧响应覆盖状态的问题。
+- 已审查 dp/sp、滚动布局、系统 inset、至少50dp手机操作控件、设备卡片可访问性、TV焦点样式与拒绝默认焦点。
+- 没有 emulator、Android system image、adb、/dev/kvm 或连接的真实设备。没有真实界面截图；运行时排版、NSD广播、TV遥控器、视频播放与系统安装/权限返回流程均未进行设备验收。
+
+## v0.1 历史云端验证（2026-10-02；不代表 v0.2 通过）
 
 - shared Range/LAN URL/限速/会话：40 个 JUnit 测试通过（直接 Kotlin 编译）。
 - MPEG-TS 封装/PTS/PCR/CRC/ADTS/AVC：11 个 JUnit 测试通过。
@@ -38,12 +49,17 @@
 
 ### 安全
 
-- 错误码、暴力尝试限速、5分钟码过期、2小时会话过期、电视重置配对。
+- 自动发现本项目接收端；多电视重名、反复刷新、服务丢失、Wi-Fi 隔离、VPN、多网卡、IPv6-only 网络错误提示。
+- 连接请求：电视明确批准/拒绝、60秒超时、手机取消与电视批准并发、返回前台、TV退出、断开与重新连接。未经批准不得取得令牌。
+- 错误 secret/IP、请求限速、2小时会话过期、电视断开手机。
 - 非配对 IP、错误/旧 token、URL DNS/重定向/外网IP/非法端口/非法路径被拒绝。
 - 只在可信 LAN；抓包可见明文的已知限制仍存在，不作加密验证通过声称。
 
 ### 更新
 
-- 仓库无 Release、GitHub不可达/限流时错误清楚；有 Release 时准确显示 tag。
-- 手机/TV 手动打开发布页；TV无浏览器提示手机/USB方式。
+- 无更新 manifest、GitHub不可达/限流时错误清楚；有发布时准确显示版本与说明。
+- 手机和电视均在应用内显示新版本说明、下载进度、取消；不依赖电视浏览器。
+- 缺失/超限/畸形 manifest、不匹配 SHA256、包名错误、签名错误、相同/更低 versionCode、非许可 URL/重定向必须拒绝。
+- 下载中切换界面/旋转/退出、反复点击检查、权限页返回、安装取消、缓存篡改后重试必须安全。
+- 从系统安装未知应用设置返回后重新验证 APK，再由用户确认打开系统安装器；实际安装升级和拒绝路径须真机测试。
 - 后续同签名高 versionCode 覆盖安装；不同签名系统拒绝。

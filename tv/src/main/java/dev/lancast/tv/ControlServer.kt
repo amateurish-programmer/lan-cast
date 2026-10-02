@@ -14,8 +14,17 @@ class ControlServer(
     private val main: Handler,
     private val callbacks: Callbacks
 ) : NanoHTTPD("0.0.0.0", PORT) {
+    @Volatile private var accepting = true
+
+    override fun stop() {
+        accepting = false
+        security.revoke()
+        super.stop()
+    }
+
     interface Callbacks {
-        fun paired(ip: String)
+        fun pairingRequested(request: dev.lancast.shared.ApprovalSession.Request)
+        fun pairingCancelled()
         fun play(url: String, ip: String, mirror: Boolean)
         fun pause()
         fun resume()
@@ -47,6 +56,7 @@ class ControlServer(
     }
 
     override fun serve(session: IHTTPSession): Response {
+        if (!accepting) return error(Response.Status.SERVICE_UNAVAILABLE, "接收服务已停止")
         val ip = session.remoteIpAddress ?: ""
         if (!LanUrlPolicy.isPrivateIpv4(ip)) return error(Response.Status.FORBIDDEN, "仅允许同一局域网的 IPv4 设备")
         // No browser CORS access, including simple cross-origin form requests.
@@ -57,7 +67,7 @@ class ControlServer(
             return error(Response.Status.METHOD_NOT_ALLOWED, "请求方法不正确")
         }
         try {
-            if (session.uri == "/pair") return pair(session, ip)
+            if (session.uri.startsWith("/pair/")) return pair(session, ip)
             val authorization = session.headers["authorization"]
             if (!security.authorized(authorization, ip)) return error(Response.Status.UNAUTHORIZED, "配对已过期，请重新配对")
             if (isStatus) return json(Response.Status.OK, callbacks.status())
@@ -77,6 +87,13 @@ class ControlServer(
                     }
                 }
                 "/stop" -> dispatch(authorization, ip) { callbacks.stopPlayback() }
+                "/disconnect" -> {
+                    if (!security.disconnect(authorization, ip)) error(Response.Status.UNAUTHORIZED, "连接已失效")
+                    else {
+                        main.post { callbacks.pairingCancelled() }
+                        json(Response.Status.OK, JSONObject().put("ok", true).put("status", "disconnected"))
+                    }
+                }
                 else -> error(Response.Status.NOT_FOUND, "未知接口")
             }
         } catch (e: RequestProblem) {
@@ -89,22 +106,30 @@ class ControlServer(
     }
 
     private fun pair(session: IHTTPSession, ip: String): Response {
-        val code = readJson(session).optString("code")
-        return when (val result = security.pair(code, ip)) {
-            is PairingSecurity.PairResult.Accepted -> {
-                main.post {
-                    if (security.authorized("Bearer ${result.token}", ip)) callbacks.paired(ip)
+        val body = readJson(session)
+        if (session.uri == "/pair/request") {
+            return when (val result = security.start(ip, body.optString("deviceName")) { accepting }) {
+                is dev.lancast.shared.ApprovalSession.Start.Pending -> {
+                    main.post { if (security.pending()?.id == result.request.id) callbacks.pairingRequested(result.request) }
+                    json(Response.Status.OK, JSONObject().put("requestId", result.request.id)
+                        .put("requestSecret", result.request.secret).put("status", "pending")
+                        .put("expiresInSeconds", 60).put("protocolVersion", 2))
                 }
-                json(Response.Status.OK, JSONObject().put("token", result.token)
-                    .put("expiresInSeconds", PairingSecurity.SESSION_LIFETIME_MS / 1000)
-                    .put("protocolVersion", 1).put("ok", true))
+                dev.lancast.shared.ApprovalSession.Start.Busy -> error(Response.Status.CONFLICT, "电视正在处理另一台手机，请先在电视断开")
+                dev.lancast.shared.ApprovalSession.Start.Limited -> error(TOO_MANY_REQUESTS, "请求过于频繁，请稍后重试").apply { addHeader("Retry-After", "60") }
             }
-            PairingSecurity.PairResult.Incorrect -> error(Response.Status.UNAUTHORIZED, "配对码不正确")
-            PairingSecurity.PairResult.Expired -> error(Response.Status.UNAUTHORIZED, "配对码已过期，请查看电视")
-            PairingSecurity.PairResult.AlreadyPaired -> error(Response.Status.CONFLICT, "电视已配对，请在电视上更换配对码")
-            PairingSecurity.PairResult.RateLimited -> json(TOO_MANY_REQUESTS, JSONObject()
-                .put("error", "尝试过于频繁，请等待 60 秒")).apply { addHeader("Retry-After", "60") }
         }
+        if (session.uri != "/pair/poll" && session.uri != "/pair/cancel") return error(Response.Status.NOT_FOUND, "未知接口")
+        val id = body.optString("requestId")
+        val secret = body.optString("requestSecret")
+        val result = security.poll(id, secret, ip) ?: return error(Response.Status.UNAUTHORIZED, "请求已失效，请重新连接")
+        if (session.uri == "/pair/cancel") {
+            security.cancel(id, secret, ip)
+            main.post { callbacks.pairingCancelled() }
+            return json(Response.Status.OK, JSONObject().put("status", "cancelled").put("protocolVersion", 2))
+        }
+        return json(Response.Status.OK, JSONObject().put("status", result.status).put("protocolVersion", 2)
+            .put("expiresInSeconds", result.seconds).apply { result.token?.let { put("token", it) } })
     }
 
     private fun dispatch(authorization: String?, ip: String, action: () -> Unit): Response {

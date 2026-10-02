@@ -41,7 +41,7 @@ jobs:
           test -f "$sdk/platforms/android-35/android.jar"
           test -x "$sdk/build-tools/35.0.0/aapt2"
       - name: Tests, lint, and debug APKs
-        run: gradle --no-daemon :shared:test :phone:testDebugUnitTest :tv:testDebugUnitTest :phone:lintDebug :tv:lintDebug :phone:assembleDebug :tv:assembleDebug
+        run: gradle --no-daemon :shared:test :phone:testDebugUnitTest :tv:testDebugUnitTest :updater:testDebugUnitTest :updater:lintDebug :phone:lintDebug :tv:lintDebug :phone:assembleDebug :tv:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: lan-cast-debug-apks

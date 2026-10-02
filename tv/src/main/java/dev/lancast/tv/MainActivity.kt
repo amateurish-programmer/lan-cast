@@ -2,11 +2,12 @@ package dev.lancast.tv
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
+import dev.lancast.shared.ApprovalSession
+import dev.lancast.updater.UpdateController
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -32,23 +33,22 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
-import java.net.Inet4Address
-import java.net.NetworkInterface
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.Executors
 
 @UnstableApi
 class MainActivity : Activity(), ControlServer.Callbacks {
     private val main = Handler(Looper.getMainLooper())
     private val security = PairingSecurity()
-    private val updateWorker = Executors.newSingleThreadExecutor()
+    private lateinit var updater: UpdateController
+    private lateinit var advertisement: ReceiverAdvertisement
+    private var approvalDialog: AlertDialog? = null
+    private var dialogRequest: String? = null
+    private val focusButtons = mutableListOf<Button>()
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
     private lateinit var rootContainer: LinearLayout
     private lateinit var pairPanelView: View
     private var fullscreen = false
-    private lateinit var codeView: TextView
+    private lateinit var connectionView: TextView
     private lateinit var addressView: TextView
     private lateinit var pairStateView: TextView
     private lateinit var statusView: TextView
@@ -65,13 +65,12 @@ class MainActivity : Activity(), ControlServer.Callbacks {
     private val refresh = object : Runnable {
         override fun run() {
             if (!active) return
-            if (security.expireSession()) {
+            if (security.expire() || (mode != "idle" && security.pairedIp() == null)) {
                 stopPlayback()
-                security.rotate()
+                security.revoke()
                 statusView.text = "配对已过期，请在手机上重新连接"
             }
-            val snapshot = security.snapshot()
-            if (snapshot.pairedIp == null && snapshot.codeSeconds == 0L) security.rotate()
+            if (dialogRequest != null && security.pending()?.id != dialogRequest) dismissApproval()
             renderPairing()
             updateStatus()
             main.postDelayed(this, 1000)
@@ -81,6 +80,8 @@ class MainActivity : Activity(), ControlServer.Callbacks {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        updater = UpdateController(this, "tv")
+        advertisement = ReceiverAdvertisement(this) { name -> main.post { if (active) addressView.text = name } }
         buildLayout()
         player = ExoPlayer.Builder(this)
             .setLoadControl(DefaultLoadControl.Builder()
@@ -120,12 +121,12 @@ class MainActivity : Activity(), ControlServer.Callbacks {
     override fun onStart() {
         super.onStart()
         active = true
-        security.rotate()
+        security.revoke()
         try {
             server = ControlServer(security, main, this).also { it.start(5_000, false) }
-            addressView.text = privateAddresses().joinToString("\n") { "$it:${ControlServer.PORT}" }
-                .ifBlank { "未找到局域网 IPv4 地址\n请连接 Wi-Fi 或网线后重新打开" }
-            statusView.text = "服务已开启 · 等待手机配对"
+            addressView.text = "正在广播接收设备…"
+            advertisement.start()
+            statusView.text = "接收器已就绪 · 在手机中选择这台电视"
         } catch (_: Exception) {
             server?.stop()
             server = null
@@ -137,6 +138,8 @@ class MainActivity : Activity(), ControlServer.Callbacks {
 
     override fun onStop() {
         active = false
+        advertisement.stop()
+        dismissApproval()
         main.removeCallbacks(refresh)
         security.revoke()
         server?.stop()
@@ -148,7 +151,9 @@ class MainActivity : Activity(), ControlServer.Callbacks {
     override fun onDestroy() {
         active = false
         main.removeCallbacksAndMessages(null)
-        updateWorker.shutdownNow()
+        updater.close()
+        advertisement.stop()
+        dismissApproval()
         security.revoke()
         server?.stop()
         server = null
@@ -160,10 +165,39 @@ class MainActivity : Activity(), ControlServer.Callbacks {
         super.onDestroy()
     }
 
-    override fun paired(ip: String) {
-        if (!active) return
+    override fun onResume() { super.onResume(); updater.onResume() }
+
+    override fun pairingRequested(request: ApprovalSession.Request) {
+        if (!active || security.pending()?.id != request.id) return
+        setFullscreen(false)
+        dismissApproval()
+        dialogRequest = request.id
+        approvalDialog = AlertDialog.Builder(this)
+            .setTitle("允许这台手机连接？")
+            .setMessage("${request.name}\n${request.ip}\n\n允许后可向电视发送视频和屏幕镜像。请只接受你认识的设备。请求将在 60 秒后失效。")
+            .setPositiveButton("允许连接") { _, _ ->
+                if (active && security.decide(request.id, true)) {
+                    statusView.text = "已连接 ${request.name} · 等待投屏"
+                    renderPairing()
+                }
+                dialogRequest = null
+            }
+            .setNegativeButton("拒绝") { _, _ -> security.decide(request.id, false); dialogRequest = null; renderPairing() }
+            .setOnCancelListener { security.decide(request.id, false); dialogRequest = null; renderPairing() }
+            .create().also { dialog ->
+                dialog.show()
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
+            }
         renderPairing()
-        statusView.text = "已连接手机 $ip · 请选择视频或开始镜像"
+    }
+
+    private fun dismissApproval() { approvalDialog?.dismiss(); approvalDialog = null; dialogRequest = null }
+    override fun pairingCancelled() {
+        if (!active) return
+        // A queued cancellation must never dismiss a newer request or stop its playback.
+        if (dialogRequest != null && security.pending()?.id != dialogRequest) dismissApproval()
+        if (security.pairedIp() == null && mode != "idle") stopPlayback()
+        renderPairing()
     }
 
     override fun play(url: String, ip: String, mirror: Boolean) {
@@ -218,7 +252,7 @@ class MainActivity : Activity(), ControlServer.Callbacks {
 
     private fun updateStatus(error: String? = null) {
         if (!ready) return
-        stateJson = JSONObject().put("ok", true).put("protocolVersion", 1)
+        stateJson = JSONObject().put("ok", true).put("protocolVersion", 2)
             .put("mode", mode).put("playing", player.isPlaying)
             .put("positionMs", player.currentPosition)
             .put("durationMs", player.duration.takeIf { it >= 0 } ?: JSONObject.NULL)
@@ -226,10 +260,14 @@ class MainActivity : Activity(), ControlServer.Callbacks {
     }
 
     private fun renderPairing() {
-        val snapshot = security.snapshot()
-        codeView.text = if (snapshot.pairedIp == null) snapshot.code.chunked(3).joinToString(" ") else "已配对"
-        pairStateView.text = if (snapshot.pairedIp == null) "配对码 ${snapshot.codeSeconds} 秒后更新\n在手机上输入电视地址和 6 位配对码"
-            else "手机：${snapshot.pairedIp}\n连接剩余 ${snapshot.sessionSeconds / 60} 分钟"
+        val ip = security.pairedIp()
+        val pending = security.pending()
+        connectionView.text = when { ip != null -> "已连接"; pending != null -> "等待批准"; else -> "准备就绪" }
+        pairStateView.text = when {
+            ip != null -> "手机 $ip\n连接剩余 ${security.seconds() / 60} 分钟"
+            pending != null -> "${pending.name} 请求连接\n请用遥控器允许或拒绝"
+            else -> "1  手机和电视连接同一网络\n2  在手机里选择这台电视\n3  用遥控器允许连接"
+        }
     }
 
     private fun buildLayout() {
@@ -239,18 +277,25 @@ class MainActivity : Activity(), ControlServer.Callbacks {
             setBackgroundColor(Color.rgb(16, 26, 41))
         }
         val panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, dp(24), 0) }
-        panel.addView(label("局域网投屏", 28, Color.WHITE).apply { typeface = Typeface.DEFAULT_BOLD })
-        panel.addView(label("电视接收端 · v0.1", 14, muted()).apply { setPadding(0, dp(6), 0, dp(20)) })
-        panel.addView(label("电视地址", 14, accent()))
+        panel.addView(label("Lan Cast", 30, Color.WHITE).apply { typeface = Typeface.DEFAULT_BOLD })
+        panel.addView(label("大屏接收端  /  v0.2", 14, muted()).apply { setPadding(0, dp(6), 0, dp(20)) })
+        val connectionCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(15), dp(14), dp(15), dp(5))
+            background = shape(Color.rgb(22, 37, 53), dp(14).toFloat(), Color.rgb(39, 59, 74))
+        }
+        panel.addView(connectionCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+        connectionCard.addView(label("附近设备中显示为", 12, accent()))
         addressView = label("正在获取…", 17, Color.WHITE).apply { typeface = Typeface.MONOSPACE }
-        panel.addView(addressView)
-        panel.addView(label("配对码", 14, accent()).apply { setPadding(0, dp(20), 0, 0) })
-        codeView = label("", 38, Color.WHITE).apply { typeface = Typeface.create("monospace", Typeface.BOLD) }
-        panel.addView(codeView)
+        connectionCard.addView(addressView)
+        connectionCard.addView(label("连接状态", 12, accent()).apply { setPadding(0, dp(18), 0, dp(5)) })
+        connectionView = label("", 28, Color.WHITE).apply { typeface = Typeface.create("monospace", Typeface.BOLD) }
+        connectionCard.addView(connectionView)
         pairStateView = label("", 13, muted()).apply { setPadding(0, dp(4), 0, dp(12)) }
-        panel.addView(pairStateView)
-        panel.addView(button("更换配对码 / 断开手机") {
-            security.rotate()
+        connectionCard.addView(pairStateView)
+        panel.addView(button("断开当前手机") {
+            security.revoke()
+            dismissApproval()
             stopPlayback()
             renderPairing()
             statusView.text = "已断开手机 · 请重新配对"
@@ -258,14 +303,12 @@ class MainActivity : Activity(), ControlServer.Callbacks {
         pauseButton = button("暂停视频") { pause() }.apply { isEnabled = false }
         resumeButton = button("继续视频") { resume() }.apply { isEnabled = false }
         val controls = LinearLayout(this)
-        controls.addView(pauseButton, LinearLayout.LayoutParams(0, dp(46), 1f))
-        controls.addView(resumeButton, LinearLayout.LayoutParams(0, dp(46), 1f))
+        controls.addView(pauseButton, LinearLayout.LayoutParams(0, dp(43), 1f).apply { rightMargin = dp(4); bottomMargin = dp(7) })
+        controls.addView(resumeButton, LinearLayout.LayoutParams(0, dp(43), 1f).apply { leftMargin = dp(4); bottomMargin = dp(7) })
         panel.addView(controls)
         panel.addView(button("全屏播放（返回键退出）") { if (mode != "idle") setFullscreen(true) })
         panel.addView(button("停止投屏") { stopPlayback() })
-        val updateButton = button("检查更新（手动安装）") { }
-        updateButton.setOnClickListener { checkUpdate(updateButton) }
-        panel.addView(updateButton)
+        panel.addView(button("检查应用更新") { updater.check() })
         panel.addView(label("请让手机和电视连接同一网络。\n退出此界面会停止接收并断开配对。", 12, muted())
             .apply { setPadding(0, dp(12), 0, 0) })
         val panelScroll = ScrollView(this).apply { addView(panel); isFillViewport = true }
@@ -274,10 +317,10 @@ class MainActivity : Activity(), ControlServer.Callbacks {
         root.addView(panelScroll, LinearLayout.LayoutParams(dp(310), LinearLayout.LayoutParams.MATCH_PARENT))
 
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val stage = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val stage = FrameLayout(this).apply { background = shape(Color.rgb(10, 17, 29), dp(18).toFloat(), Color.rgb(41, 58, 77)); clipToOutline = true }
         playerView = PlayerView(this).apply { useController = false; keepScreenOn = true }
         stage.addView(playerView, FrameLayout.LayoutParams(-1, -1))
-        emptyView = label("在手机上选择本地视频\n或开始屏幕镜像", 23, muted()).apply { gravity = Gravity.CENTER }
+        emptyView = label("让精彩，来到大屏\n\n连接手机后，即可播放视频或镜像屏幕", 23, muted()).apply { gravity = Gravity.CENTER }
         stage.addView(emptyView, FrameLayout.LayoutParams(-1, -1))
         content.addView(stage, LinearLayout.LayoutParams(-1, 0, 1f))
         statusView = label("等待手机连接", 17, Color.WHITE).apply { setPadding(0, dp(12), 0, dp(5)) }
@@ -286,7 +329,15 @@ class MainActivity : Activity(), ControlServer.Callbacks {
         content.addView(warningView)
         root.addView(content, LinearLayout.LayoutParams(0, -1, 1f))
         setContentView(root)
-        panel.getChildAt(7)?.requestFocus()
+        focusButtons.forEachIndexed { index, button ->
+            button.nextFocusUpId = focusButtons.getOrNull(index - 1)?.id ?: button.id
+            button.nextFocusDownId = focusButtons.getOrNull(index + 1)?.id ?: button.id
+        }
+        pauseButton.nextFocusRightId = resumeButton.id
+        resumeButton.nextFocusLeftId = pauseButton.id
+        pauseButton.nextFocusDownId = focusButtons[3].id
+        resumeButton.nextFocusUpId = focusButtons[0].id
+        focusButtons.firstOrNull()?.requestFocus()
     }
 
     private fun setFullscreen(enabled: Boolean) {
@@ -312,84 +363,31 @@ class MainActivity : Activity(), ControlServer.Callbacks {
         return super.dispatchKeyEvent(event)
     }
 
-    private fun checkUpdate(button: Button) {
-        button.isEnabled = false
-        button.text = "正在检查…"
-        updateWorker.execute {
-            val result = runCatching {
-                val conn = URL("https://api.github.com/repos/amateurish-programmer/lan-cast/releases/latest")
-                    .openConnection() as HttpURLConnection
-                try {
-                    conn.connectTimeout = 5_000
-                    conn.readTimeout = 5_000
-                    conn.instanceFollowRedirects = false
-                    conn.setRequestProperty("Accept", "application/vnd.github+json")
-                    conn.setRequestProperty("User-Agent", "LanCast-TV/0.1.0")
-                    when (conn.responseCode) {
-                        404 -> "尚无已发布版本。当前版本：0.1.0。"
-                        200 -> {
-                            val text = conn.inputStream.bufferedReader().use { reader ->
-                                val buffer = CharArray(262_145)
-                                var count = 0
-                                while (count < buffer.size) {
-                                    val n = reader.read(buffer, count, buffer.size - count)
-                                    if (n < 0) break
-                                    count += n
-                                }
-                                check(count <= 262_144) { "更新响应过大" }
-                                String(buffer, 0, count)
-                            }
-                            val tag = JSONObject(text).getString("tag_name").take(80)
-                            "最新发布：$tag\n当前版本：0.1.0。\n下载 tv APK 后手动安装；只有相同签名的新版才能覆盖安装。"
-                        }
-                        else -> "更新服务暂不可用（HTTP ${conn.responseCode}）。"
-                    }
-                } finally { conn.disconnect() }
-            }.getOrElse { "检查更新失败，请稍后重试。" }
-            main.post {
-                if (isFinishing || isDestroyed) return@post
-                button.isEnabled = true
-                button.text = "检查更新（手动安装）"
-                if (!active) return@post
-                AlertDialog.Builder(this).setTitle("应用更新")
-                    .setMessage("$result\n\n没有电视浏览器时，可在手机或电脑打开发布页，下载 tv APK 后通过 U 盘安装。")
-                    .setPositiveButton("打开发布页") { _, _ -> openReleases() }
-                    .setNegativeButton("关闭", null).show()
-            }
-        }
-    }
-
-    private fun openReleases() {
-        val url = "https://github.com/amateurish-programmer/lan-cast/releases/latest"
-        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-        catch (_: ActivityNotFoundException) {
-            AlertDialog.Builder(this).setTitle("请在手机或电脑打开")
-                .setMessage("$url\n\n下载 tv APK，再通过 U 盘手动安装到电视。")
-                .setPositiveButton("知道了", null).show()
-        }
-    }
-
     private fun label(value: String, size: Int, color: Int) = TextView(this).apply {
         text = value
         textSize = size.toFloat()
         setTextColor(color)
     }
+    private fun shape(color: Int, radius: Float = dp(10).toFloat(), stroke: Int = color) = GradientDrawable().apply {
+        setColor(color); cornerRadius = radius; setStroke(dp(2), stroke)
+    }
     private fun button(title: String, action: () -> Unit) = Button(this).apply {
+        id = View.generateViewId()
         text = title
         textSize = 13f
         isAllCaps = false
         isFocusable = true
+        setTextColor(Color.WHITE)
+        background = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), shape(Color.rgb(28, 85, 79), stroke = accent()))
+            addState(intArrayOf(android.R.attr.state_pressed), shape(Color.rgb(28, 85, 79), stroke = accent()))
+            addState(intArrayOf(), shape(Color.rgb(30, 45, 63)))
+        }
+        setOnFocusChangeListener { _, focused -> alpha = if (isEnabled) 1f else .4f; elevation = if (focused) dp(5).toFloat() else 0f }
         setOnClickListener { action() }
-        layoutParams = LinearLayout.LayoutParams(-1, dp(46))
+        layoutParams = LinearLayout.LayoutParams(-1, dp(43)).apply { bottomMargin = dp(7) }
+        focusButtons.add(this)
     }
-    private fun privateAddresses(): List<String> = runCatching {
-        NetworkInterface.getNetworkInterfaces().toList()
-            .filter { it.isUp && !it.isLoopback }
-            .flatMap { it.inetAddresses.toList() }
-            .filterIsInstance<Inet4Address>()
-            .mapNotNull { it.hostAddress }
-            .filter(LanUrlPolicy::isPrivateIpv4).distinct()
-    }.getOrDefault(emptyList())
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun accent() = Color.rgb(99, 220, 197)
     private fun muted() = Color.rgb(167, 185, 207)
