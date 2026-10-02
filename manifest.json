@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "versionName": "0.2.1",
+  "versionCode": 3,
+  "notes": "修复手机「重新搜索」缺少明显反馈的问题：点击后立即提示，12 秒未发现电视时显示安装并打开电视接收端、连接同一 Wi-Fi 的说明，同时继续搜索；接收端离线和系统搜索失败有明确提示。\n电视端同步版本号，配对协议及更新地址不变。仍需在电视上安装并打开本应用接收端，电视自带投屏不能代替。尚未完成真机发现及播放验收。\n",
+  "artifacts": {
+    "phone": {
+      "packageName": "dev.lancast.phone",
+      "url": "https://raw.githubusercontent.com/amateurish-programmer/lan-cast/0b0530d9e6a22924952df0432e5bbd764644aad9/apks/v0.2.1/phone.apk",
+      "sha256": "6b88cb461f4677626dd95732ea0c7cb162efd08d993db27db2b0ddf0608b1d4f",
+      "size": 2408727
+    },
+    "tv": {
+      "packageName": "dev.lancast.tv",
+      "url": "https://raw.githubusercontent.com/amateurish-programmer/lan-cast/0b0530d9e6a22924952df0432e5bbd764644aad9/apks/v0.2.1/tv.apk",
+      "sha256": "0b6e00903c9940e022fe0ef0ddff49a9fa7d6878d116fdea2e367ffb537e6dd4",
+      "size": 5770981
+    }
+  }
+}
