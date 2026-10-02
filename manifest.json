@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "versionName": "0.2.0",
+  "versionCode": 2,
+  "notes": "# v0.2.0 · 自动发现与大屏体验\n\n- 手机重新设计深色界面：设备卡片、连接状态、操作分区与清晰提示。\n- 电视统一深色视觉：连接卡片、明确的遥控器焦点与全屏播放控制。\n- 自动发现局域网内正在运行的本项目电视接收端，不再输入 IP 或 PIN。\n- 手机请求连接，电视明确允许 / 拒绝；支持取消、超时、限速和断开。\n- 手机网络变化后停止共享并作废会话；旧请求不能覆盖新的投屏操作。\n- 手机和电视均可在应用内查看新版本说明、下载并校验 APK，再打开系统安装器。\n- 更新严格校验固定仓库 URL、SHA-256、APK 包名、递增版本号与原有签名。\n\n注意：本版本仍是 debug 签名测试版，传输为可信局域网内的明文 HTTP。自动发现仅支持本项目接收端；不是通用 Chromecast/DLNA 客户端。不绕过 DRM 或应用采集限制。尚未完成 vivo S20 Pro / Sony KD-65X9088H 真机与实际系统升级验收。\n",
+  "artifacts": {
+    "phone": {
+      "packageName": "dev.lancast.phone",
+      "url": "https://raw.githubusercontent.com/amateurish-programmer/lan-cast/193ccd60a5c11701d231ea03fb6aefb09e3ed45f/apks/v0.2.0/phone.apk",
+      "sha256": "6cac33806303fe6038fbdfc0524807b4758fad15c3c890bd997c686008f53c8b",
+      "size": 2460008
+    },
+    "tv": {
+      "packageName": "dev.lancast.tv",
+      "url": "https://raw.githubusercontent.com/amateurish-programmer/lan-cast/193ccd60a5c11701d231ea03fb6aefb09e3ed45f/apks/v0.2.0/tv.apk",
+      "sha256": "41d1175f2841d781326084b15afee1ab59bbbbe2ad6f02b05453f87ae42f2894",
+      "size": 5801293
+    }
+  }
+}
