@@ -13,7 +13,7 @@ import java.net.InetAddress
 internal data class Receiver(val name: String, val ip: String, val port: Int)
 
 /** Resolves services serially for Android versions allowing only one active resolve. */
-internal class ReceiverDiscovery(context: Context, private val changed: (List<Receiver>) -> Unit, private val failed: (String) -> Unit) {
+internal class ReceiverDiscovery(context: Context, private val changed: (List<Receiver>) -> Unit, private val reportStatus: (String) -> Unit) {
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private val lock = (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).createMulticastLock("lan-cast-discovery").apply { setReferenceCounted(false) }
@@ -23,20 +23,27 @@ internal class ReceiverDiscovery(context: Context, private val changed: (List<Re
     private var resolving = false
     private var epoch = 0
     private var listener: NsdManager.DiscoveryListener? = null
+    private var emptySearchNotice: Runnable? = null
     fun start() {
         if (listener != null) return
         val current = ++epoch
+        reportStatus("正在搜索电视…\n请在电视上安装并打开本应用接收端，两端连接同一 Wi-Fi。")
         val callbacks = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(type: String) {}
             override fun onDiscoveryStopped(type: String) {}
-            override fun onStartDiscoveryFailed(type: String, code: Int) { handler.post { if (current == epoch) { stop(); failed("暂时无法搜索电视，请检查 Wi-Fi 后重试") } } }
+            override fun onStartDiscoveryFailed(type: String, code: Int) { handler.post { if (current == epoch) { stop(); reportStatus("暂时无法搜索电视，请检查 Wi-Fi 后重试（错误 $code）") } } }
             override fun onStopDiscoveryFailed(type: String, code: Int) {}
             override fun onServiceFound(info: NsdServiceInfo) { handler.post { if (current == epoch && info.serviceType.trimEnd('.') == "_lancast._tcp" && ReceiverEligibility.validName(info.serviceName) && present.size < 32 && queue.size < 32 && present.add(info.serviceName)) { queue.add(info); resolveNext(current) } } }
-            override fun onServiceLost(info: NsdServiceInfo) { handler.post { if (current == epoch) { present.remove(info.serviceName); queue.removeAll { it.serviceName == info.serviceName }; found.remove(info.serviceName); changed(found.values.toList()) } } }
+            override fun onServiceLost(info: NsdServiceInfo) { handler.post { if (current == epoch) { present.remove(info.serviceName); queue.removeAll { it.serviceName == info.serviceName }; val removed = found.remove(info.serviceName) != null; changed(found.values.toList()); if (removed && found.isEmpty()) reportStatus("接收端已离线，仍在搜索。\n请保持电视接收端打开，并检查两端网络。") } } }
         }
         listener = callbacks
-        try { lock.acquire(); nsd.discoverServices("_lancast._tcp.", NsdManager.PROTOCOL_DNS_SD, callbacks) }
-        catch (_: Exception) { stop(); failed("无法搜索电视，请连接同一可信 Wi-Fi 后重试") }
+        try {
+            lock.acquire(); nsd.discoverServices("_lancast._tcp.", NsdManager.PROTOCOL_DNS_SD, callbacks)
+            emptySearchNotice = Runnable {
+                if (current == epoch && found.isEmpty()) reportStatus("暂未发现电视，仍会继续搜索。\n请确认电视已安装并打开本应用 0.2 或更高版本接收端，两端连接同一 Wi-Fi；电视自带投屏功能不能代替本应用。")
+            }.also { handler.postDelayed(it, 12_000) }
+        }
+        catch (_: Exception) { stop(); reportStatus("无法搜索电视，请连接同一可信 Wi-Fi 后重试") }
     }
     @Suppress("DEPRECATION")
     private fun resolveNext(current: Int) {
@@ -59,6 +66,7 @@ internal class ReceiverDiscovery(context: Context, private val changed: (List<Re
     }
     fun stop() {
         ++epoch
+        emptySearchNotice?.let { handler.removeCallbacks(it) }; emptySearchNotice = null
         listener?.let { try { nsd.stopServiceDiscovery(it) } catch (_: Exception) {} }
         listener = null; queue.clear(); found.clear(); present.clear(); changed(emptyList())
         if (lock.isHeld) lock.release()

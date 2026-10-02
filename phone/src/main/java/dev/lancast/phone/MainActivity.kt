@@ -99,7 +99,10 @@ class MainActivity : Activity() {
             accessibilityLiveRegion = android.view.View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         devices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; layout.addView(devices)
-        button("重新搜索") { discovery.stop(); renderDevices(emptyList()); discovery.start() }
+        button("重新搜索") {
+            discovery.stop(); discovery.start()
+            Toast.makeText(this, "已重新搜索，请保持电视接收端打开", Toast.LENGTH_SHORT).show()
+        }
         cancelPair = button("取消连接请求") { cancelPairing() }.apply { visibility = android.view.View.GONE }
         label("02  开始分享", 18f, white).setPadding(0, dp(26), 0, dp(8))
         button("选择本地视频", true) {
@@ -134,7 +137,9 @@ class MainActivity : Activity() {
     private fun renderDevices(receivers: List<Receiver>) {
         if (isDestroyed) return
         devices.removeAllViews()
-        deviceHint.text = if (receivers.isEmpty()) "正在搜索…请保持电视接收端打开。\n没有发现？检查是否处于同一 Wi-Fi，再点重新搜索。" else "找到 ${receivers.size} 台电视 · 轻点后在电视上确认"
+        // Discovery owns empty/searching/error hints, so clearing the cards must
+        // not overwrite a timeout or failure with an endless “searching” state.
+        if (receivers.isNotEmpty()) deviceHint.text = "找到 ${receivers.size} 台电视 · 轻点后在电视上确认"
         receivers.forEach { receiver ->
             val connected = receiver.ip == pairedIp && token.isNotBlank()
             val card = LinearLayout(this).apply {

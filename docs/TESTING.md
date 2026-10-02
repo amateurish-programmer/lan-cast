@@ -1,5 +1,14 @@
 # 测试和真机验收
 
+## v0.2.1 搜索反馈修复（2026-10-02）
+
+- 修复「重新搜索」在没有接收端时界面文字不变、长时间只显示搜索中而缺少结果提示的问题：点击立即有短提示；12 秒没有发现时显示安装/打开电视接收端及同网提示，搜索仍继续。
+- 搜索提示定时任务在停止/重新开始时移除，并检查扫描代次及当前结果；发现电视后不会被旧的空结果提示覆盖。最后一个已发现接收端离线时显示离线提示；系统搜索失败显示错误码。
+- 两端版本统一为 0.2.1 / versionCode 3；电视协议、配对确认和固定在线更新地址不变。不能将这项反馈修复称为真机发现故障已解决。
+- 最终完整 Gradle 聚合检查通过：四个 module 的 JVM 测试、三个 Android module 的 lintDebug、phone/tv assembleDebug；116 个现有测试零失败/错误。lint 无错误，phone 3、TV 9、updater 1 项警告。没有新增 Android 仪器测试，现有 JVM 测试不覆盖 Toast/Handler/NSD 系统回调。
+- 两个最终 APK 已用 aapt 核对包名和版本，用 apksigner 验证签名，SHA-256 证书保持 ecfff34ef90498c034582f4b5fc1f230bdc462a222a43ff9b9776c3f829d6ee3。未进行真实系统覆盖安装。
+- 待真机验证：无接收端连续点击刷新、12 秒提示、提示出现后再启动电视接收端、发现期间离线/返回前台、系统搜索失败。无设备环境不能验证 NSD/OEM 运行时或点击实际表现。
+
 ## v0.2 云端验证（2026-10-02）
 
 - 最终完整 Gradle 聚合检查通过：shared:test、phone/testDebugUnitTest、tv/testDebugUnitTest、updater/testDebugUnitTest、三个 Android module 的 lintDebug、phone/tv assembleDebug。
